@@ -5,6 +5,7 @@ import { Mic, MicOff, Save, Clock, Paperclip, Stethoscope, Lightbulb, ChevronRig
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 import { getStoredToken } from "@/lib/auth";
+import { BACKEND_URL } from "@/lib/backend";
 
 const tabs = ["Your Story", "Timeline", "Past Consultations", "Attachments"];
 
@@ -114,6 +115,10 @@ const pastConsultations = [
 
 const STORY_KEY = "echocare-story";
 const ANALYSIS_KEY = "echocare-story-analysis";
+const voiceLanguages = [
+  { code: "en-IN", label: "English" },
+  { code: "ta-IN", label: "Tamil" },
+] as const;
 
 export default function StoryPage() {
   const { user } = useAuth();
@@ -134,6 +139,8 @@ export default function StoryPage() {
   const [voiceError, setVoiceError] = useState("");
   const [voiceStatus, setVoiceStatus] = useState("");
   const [interimTranscript, setInterimTranscript] = useState("");
+  const [voiceLanguage, setVoiceLanguage] = useState<(typeof voiceLanguages)[number]["code"]>("en-IN");
+  const [translatingVoice, setTranslatingVoice] = useState(false);
   const wordCount = story.trim() ? story.trim().split(/\s+/).length : 0;
 
   // Load story from MongoDB on mount, fallback to localStorage
@@ -146,7 +153,7 @@ export default function StoryPage() {
       try {
         const token = getStoredToken();
         if (token) {
-          const res = await fetch("http://localhost:8000/api/story/latest", {
+          const res = await fetch(`${BACKEND_URL}/api/story/latest`, {
             headers: { Authorization: `Bearer ${token}` },
           });
           if (res.ok) {
@@ -178,7 +185,7 @@ export default function StoryPage() {
     try {
       const token = getStoredToken();
       if (!token) return;
-      await fetch("http://localhost:8000/api/story/save-draft", {
+      await fetch(`${BACKEND_URL}/api/story/save-draft`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ story_text: text }),
@@ -209,16 +216,40 @@ export default function StoryPage() {
     micStreamRef.current = null;
   };
 
-  const appendVoiceTranscript = (transcript: string) => {
+  const translateTamilTranscript = async (transcript: string) => {
+    setTranslatingVoice(true);
+    setVoiceStatus("Tamil received. Translating to English for analysis...");
+    try {
+      const response = await fetch("/api/translate-voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: transcript, sourceLanguage: voiceLanguage }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || "Translation failed");
+      return typeof data.translatedText === "string" && data.translatedText.trim()
+        ? data.translatedText.trim()
+        : transcript;
+    } catch {
+      setVoiceError("Tamil speech was captured, but translation to English failed. The original Tamil transcript was added so you can edit it manually.");
+      return transcript;
+    } finally {
+      setTranslatingVoice(false);
+      setVoiceStatus(recording ? "Microphone connected. Listening and converting speech to text..." : "");
+    }
+  };
+
+  const appendVoiceTranscript = async (transcript: string) => {
     const clean = transcript.replace(/\s+/g, " ").trim();
     if (!clean) return;
+    const analysisText = voiceLanguage === "ta-IN" ? await translateTamilTranscript(clean) : clean;
     if (analysis) {
       setAnalysis(null);
       setEditedAnalysis(null);
       localStorage.removeItem(ANALYSIS_KEY);
     }
     setStory(prev => {
-      const updated = prev.trim() ? `${prev.trim()} ${clean}` : clean;
+      const updated = prev.trim() ? `${prev.trim()} ${analysisText}` : analysisText;
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => saveStoryToBackend(updated), 800);
       localStorage.setItem(STORY_KEY, updated);
@@ -256,11 +287,13 @@ export default function StoryPage() {
       const rec = new SpeechRecognitionAPI();
       rec.continuous = true;
       rec.interimResults = true;
-      rec.lang = "en-IN";
+      rec.lang = voiceLanguage;
       rec.maxAlternatives = 1;
 
       rec.onstart = () => {
-        setVoiceStatus("Microphone connected. Listening and converting speech to text...");
+        setVoiceStatus(voiceLanguage === "ta-IN"
+          ? "Microphone connected. Listening in Tamil..."
+          : "Microphone connected. Listening and converting speech to text...");
       };
       
       rec.onresult = (event: SpeechRecognitionEventLike) => {
@@ -274,7 +307,7 @@ export default function StoryPage() {
           }
         }
         setInterimTranscript(interim.trim());
-        appendVoiceTranscript(finalTranscript);
+        void appendVoiceTranscript(finalTranscript);
       };
 
       rec.onerror = (event: SpeechRecognitionErrorEventLike) => {
@@ -436,7 +469,7 @@ export default function StoryPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                       <div style={{ width: "10px", height: "10px", borderRadius: "50%", background: "#EF4444", animation: "pulse 1.5s infinite" }} />
                       <span style={{ fontSize: "13px", fontWeight: 600, color: "#EF4444" }}>
-                        {voiceStatus || "Recording... Speak clearly into your microphone"}
+                        {translatingVoice ? "Translating Tamil speech to English..." : voiceStatus || "Recording... Speak clearly into your microphone"}
                       </span>
                       <button className="btn btn-sm btn-danger" style={{ marginLeft: "auto" }} onClick={toggleVoice}>Stop Recording</button>
                     </div>
@@ -468,9 +501,21 @@ export default function StoryPage() {
                     {saved && <span style={{ fontSize: "12px", color: "#22C55E", fontWeight: 600 }}>✓ Saved to MongoDB</span>}
                   </div>
                   <div style={{ display: "flex", gap: "10px" }}>
+                    <select
+                      className="form-input"
+                      value={voiceLanguage}
+                      disabled={recording || translatingVoice}
+                      onChange={e => setVoiceLanguage(e.target.value as (typeof voiceLanguages)[number]["code"])}
+                      style={{ width: "118px", height: "36px", fontSize: "12px", fontWeight: 700 }}
+                      aria-label="Voice language"
+                    >
+                      {voiceLanguages.map(language => (
+                        <option key={language.code} value={language.code}>{language.label}</option>
+                      ))}
+                    </select>
                     <button className={`btn btn-sm ${recording ? "btn-danger" : "btn-secondary"}`} onClick={toggleVoice}>
                       {recording ? <MicOff size={14} /> : <Mic size={14} />}
-                      {recording ? "Stop Voice" : "Voice Input"}
+                      {recording ? "Stop Voice" : voiceLanguage === "ta-IN" ? "Speak Tamil" : "Voice Input"}
                     </button>
                     <button className="btn btn-secondary btn-sm" onClick={handleSave}>
                       <Save size={14} />{saved ? "Saved!" : "Save Draft"}

@@ -3,8 +3,8 @@ import AppLayout from "@/components/AppLayout";
 import { useMemo, useState } from "react";
 import { Upload, FileText, Eye, Trash2, Download, Plus, AlertCircle, Sparkles, Loader2, CheckCircle } from "lucide-react";
 import { getStoredToken } from "@/lib/auth";
+import { BACKEND_URL } from "@/lib/backend";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 const REPORTS_KEY = "echocare-diagnostic-reports";
 
 type ReportStatus = "uploaded" | "analyzed" | "error";
