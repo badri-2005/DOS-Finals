@@ -84,7 +84,8 @@ interface Message {
 
 const crisisKeywords = [
   "suicide", "self-harm", "hurt myself", "end my life", "want to die",
-  "can't go on", "hopeless", "kill myself", "abuse", "beaten", "scared of my"
+  "can't go on", "hopeless", "kill myself", "abuse", "beaten", "scared of my",
+  "work stress", "family stress", "overwhelmed", "not in good mood", "not feeling good"
 ];
 
 function readStoredJson<T>(key: string, fallback: T): T {
@@ -102,7 +103,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([
     {
       sender: "echo",
-      content: "Hello! I am Echo, your AI health companion. I'm here to listen to your experiences, track patterns, and support you on your wellness journey. How are you feeling today?",
+      content: "Hello, I am Echo, your AI health companion - not a doctor. I can help you reflect on your story, lifestyle logs, survey answers, symptom trends, and uploaded reports, then suggest gentle wellness steps and the right type of qualified practitioner to discuss things with. How are you feeling today?",
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);

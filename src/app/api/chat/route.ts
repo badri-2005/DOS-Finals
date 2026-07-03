@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
+const JARVISLABS_LLM_URL = process.env.JARVISLABS_LLM_URL
+  ?? process.env.NEXT_SERVER_JARVISLABS_LLM_URL
+  ?? "https://e446de4381011.notebooksn.jarvislabs.net/api/generate";
+const JARVISLABS_MODEL = process.env.JARVISLABS_MODEL ?? "healthcompanion:latest";
+
 type ChatMessage = { role: string; content: string };
 type ChatContext = {
   surveyData?: Record<string, unknown>;
@@ -33,12 +38,64 @@ function includesAny(text: string, words: string[]) {
   return words.some(word => lower.includes(word));
 }
 
-function buildCompanionReply(latest: string, context: ChatContext) {
+function reviewedInputs(context: ChatContext) {
+  const inputs = [];
+  if (context.storyText || Object.keys(context.storyAnalysis ?? {}).length > 0) inputs.push("story / AI story analysis");
+  if (Object.keys(context.surveyData ?? {}).length > 0) inputs.push("survey / onboarding responses");
+  if (Object.keys(context.trackerLog ?? {}).length > 0) inputs.push("latest lifestyle tracker log");
+  if ((context.reports ?? []).length > 0) inputs.push("uploaded report summaries");
+  if ((context.requestedMarkers ?? []).length > 0) inputs.push("missing-marker checklist");
+  return inputs.length ? inputs : ["this chat message only"];
+}
+
+function extractDepartments(story: Record<string, unknown>) {
+  return Array.isArray(story.suggestedDepartments)
+    ? story.suggestedDepartments
+      .map(item => typeof item === "object" && item ? String((item as { dept?: unknown }).dept ?? "") : "")
+      .filter(Boolean)
+    : [];
+}
+
+function isDistress(latest: string, context: ChatContext) {
+  const survey = context.surveyData ?? {};
+  const tracker = context.trackerLog ?? {};
+  const story = context.storyAnalysis ?? {};
+  return includesAny(
+    `${latest} ${survey.stressLevel ?? ""} ${tracker.mood ?? ""} ${story.emotionalThemes ?? ""}`,
+    [
+      "suicide", "self-harm", "hurt myself", "end my life", "want to die", "kill myself",
+      "can't go on", "hopeless", "abuse", "beaten", "scared of my", "overwhelmed",
+      "work stress", "family stress", "not in good mood", "not feeling good", "low mood",
+    ]
+  );
+}
+
+function buildDistressReply(latest: string) {
+  const crisis = includesAny(latest, ["suicide", "self-harm", "hurt myself", "end my life", "want to die", "kill myself", "can't go on"]);
+  return `I am really sorry you are carrying this right now. I am Echo, your health companion, not a doctor or emergency service.
+
+What I am hearing:
+- You may be feeling emotionally strained, overwhelmed, unsafe, or not in a good mood.
+- I will stay with supportive, non-judgmental guidance and avoid medical conclusions here.
+
+Support steps:
+- If you may be in immediate danger or thinking of harming yourself, please contact local emergency services now or reach out to a trusted person nearby.
+- If this is workplace or family stress, you do not have to explain everything at once. A counselor or trained mental health professional can help you unpack it safely.
+- You can use the platform option to connect with a counselor, consultancy support, or request a callback.
+- For the next few minutes, try one small grounding step: sit somewhere safe, slow your breathing, drink water if available, and message or call one trusted person.
+
+One gentle question:
+- Are you safe right now, or do you need urgent help connecting to someone?
+
+Disclaimer:
+This is supportive guidance, not a medical diagnosis, prescription, or crisis intervention service. Please contact emergency services or a qualified mental health professional if there is any immediate risk.${crisis ? " If you are in India, you can also consider a local crisis helpline or emergency number available in your area." : ""}`;
+}
+
+function buildContextSummary(latest: string, context: ChatContext) {
   const survey = context.surveyData ?? {};
   const story = context.storyAnalysis ?? {};
   const tracker = context.trackerLog ?? {};
   const reports = Array.isArray(context.reports) ? context.reports : [];
-  const requestedMarkers = asStrings(context.requestedMarkers);
   const symptoms = compact([
     ...asStrings(survey.symptoms),
     ...asStrings(story.detectedSymptoms),
@@ -53,42 +110,133 @@ function buildCompanionReply(latest: string, context: ChatContext) {
     survey.occupation,
     tracker.mood,
   ], 5);
-  const departments = Array.isArray(story.suggestedDepartments)
-    ? story.suggestedDepartments.map(item => typeof item === "object" && item ? String((item as { dept?: unknown }).dept ?? "") : "").filter(Boolean)
-    : [];
+  const departments = extractDepartments(story);
   const reportNames = reports.map(report => String(report.name ?? report.reportType ?? "")).filter(Boolean).slice(0, 3);
-  const lowMood = includesAny(`${latest} ${survey.stressLevel ?? ""} ${tracker.mood ?? ""} ${story.emotionalThemes ?? ""}`, ["sad", "low", "not good", "anxious", "stress", "hopeless", "tired", "exhausted", "overwhelmed"]);
-  const careMethods = compact([
-    departments[0] ? `Discuss a ${departments[0]} review with a qualified clinician` : "Start with a general physician review if symptoms are continuing",
-    symptoms.some(s => /pain|joint|stiff|ache/i.test(s)) ? "Ask whether physiotherapy, rheumatology, or pain-management review is appropriate" : "",
-    symptoms.some(s => /fatigue|energy|sleep|brain/i.test(s)) ? "Consider a sleep, nutrition, hydration, and gentle-activity plan with a clinician or lifestyle-medicine professional" : "",
-    lowMood ? "Consider speaking with a mental health professional or counselor for emotional support while the medical workup continues" : "",
-    requestedMarkers.length ? `Bring your missing-marker checklist: ${requestedMarkers.slice(0, 3).join(", ")}` : "",
-  ], 5);
+  const requestedMarkers = asStrings(context.requestedMarkers);
 
-  return `Symptom Analysis:
-1. ${symptoms[0] || "Your current concern"}${symptoms[1] ? ` with ${symptoms[1]}` : ""}.
-2. ${painPoints[0] || "The main pattern is still being clarified from your survey, story, tracker, and reports."}
+  return {
+    latest,
+    reviewed: reviewedInputs(context),
+    symptoms,
+    painPoints,
+    lifestyle,
+    departments,
+    reportNames,
+    requestedMarkers,
+    storySummary: String(story.patternSummary ?? ""),
+  };
+}
 
-### Lifestyle and Mood Context:
-- Mood/Stress: ${lowMood ? "You sound low or overloaded right now, so the next step should feel gentle and supportive rather than forceful." : "No strong distress signal was detected in this message, but emotional context still matters."}
-- Routine: ${lifestyle[0] || "Keep logging sleep, stress, food, water, activity, and symptom changes so patterns become clearer."}
-- Reports: ${reportNames.length ? `I can see report context such as ${reportNames.join(", ")}.` : "No uploaded report summary is available in this chat context yet."}
+function buildFallbackReply(latest: string, context: ChatContext) {
+  const data = buildContextSummary(latest, context);
+  const symptomLine = data.symptoms.length
+    ? data.symptoms.join(", ")
+    : "I do not yet have specific symptoms beyond what you just typed";
+  const insight = data.storySummary || data.painPoints[0] || "The available data is still limited, so I can only make broad, cautious observations.";
+  const specialist = data.departments[0] || "General Medicine / Primary Care";
+  const systems = compact([
+    "Allopathy - useful for medical evaluation, report review, and deciding whether a specialist referral is needed",
+    data.lifestyle.length ? "Ayurveda - may be worth discussing for lifestyle, sleep, stress, and chronic symptom support with a registered practitioner" : "",
+    data.symptoms.some(symptom => /pain|joint|body|digest|skin/i.test(symptom)) ? "Siddha - may be worth exploring only with a registered Siddha practitioner if culturally and geographically appropriate" : "",
+  ], 3);
 
-### Insights:
-1. **User-data based:** I am using your saved survey, story analysis, tracker notes, report summaries, and this message rather than a static template.
-2. **Care direction:** ${departments[0] ? `${departments[0]} appears relevant as a discussion/referral option based on your existing analysis.` : "A primary-care review can help decide which specialist is appropriate."}
-3. **Supportive framing:** These are possible routes to discuss, not a diagnosis or exact treatment plan.
+  return `1. **WELCOME / ACKNOWLEDGEMENT**
+I hear you. I am Echo, your AI health companion, not a doctor. I will stay within what you have shared and the platform data available, and I will suggest only safe next steps to discuss with qualified professionals.
 
-### Suggested Care Methods to Discuss:
-${careMethods.map((method, index) => `${index + 1}. ${method}.`).join("\n")}
+2. **SYMPTOM SUMMARY**
+- Key concerns available right now: ${symptomLine}.
+- Additional context: ${data.painPoints[0] || "No detailed pain point was found in the saved story analysis."}
 
-### What You Can Say to a Doctor:
-- "These symptoms are affecting my daily life, and I would like help reviewing patterns across my story, tracker, and reports."
-- "Can we discuss which tests, referrals, or supportive therapies are appropriate instead of assuming one cause?"
+3. **RELEVANT DATA REVIEWED**
+${data.reviewed.map(item => `- ${item}`).join("\n")}
+${data.reportNames.length ? `- Report context: ${data.reportNames.join(", ")}` : "- Uploaded report context: none available in this chat response"}
 
-### Confidence Level:
-Moderate. The suggestion is grounded in your saved data, but a qualified clinician should decide the actual diagnosis, treatment, and booking priority.`;
+4. **INSIGHTS**
+- ${insight}
+- I am not assuming a diagnosis. The safest pattern is to connect your symptoms, logs, survey answers, and report gaps before choosing any care path.
+- ${data.requestedMarkers.length ? `Your missing-marker checklist may be useful to bring up: ${data.requestedMarkers.slice(0, 4).join(", ")}.` : "If tests or reports are incomplete, the report auditor can help prepare questions for a clinician."}
+
+5. **LIFESTYLE RECOMMENDATIONS**
+- Keep a simple daily log of sleep, mood, food timing, activity, and symptom intensity.
+- Aim for regular sleep and wake timing, a calming wind-down routine, and reduced screens close to bedtime.
+- Choose balanced meals, regular hydration, and gentle movement within your comfort level.
+- For stress, try brief breathing, grounding, or a short walk if it feels safe and manageable.
+
+6. **SUGGESTED MEDICAL SYSTEM(S)**
+${systems.map(system => `- ${system}.`).join("\n")}
+
+7. **RECOMMENDED CONSULTATION**
+- Consider discussing this with ${specialist}.
+- If you want, you can use EchoCare to connect with consultancy support or request a callback for help choosing the right practitioner category.
+
+8. **CONFIDENCE LEVEL**
+${data.reviewed.length >= 3 ? "Medium" : "Low"} confidence, based on the amount and specificity of available platform data.
+
+9. **DISCLAIMER**
+This is not a medical diagnosis, prescription, or treatment plan. Please consult a qualified, registered healthcare professional in the relevant system before making medical decisions.`;
+}
+
+function buildSystemPrompt() {
+  return `You are Echo, an AI health companion for EchoCare. You are not a doctor.
+
+PERSONA AND TONE:
+- Warm, trustworthy, attentive, conversational, empathetic, and clear.
+- Be transparent about the basis of every response.
+- Ask follow-up questions naturally. Do not demand a large amount of information at once.
+
+DATA RULES:
+Base the response strictly on the provided chat message and account context: story, lifestyle logs, survey/onboarding responses, uploaded reports, report summaries, symptom trends, activity history, and general WHO-consistent wellness guidance.
+Never invent facts, symptoms, reports, dates, medicines, diagnoses, or data.
+
+LEGAL BOUNDARY FOR INDIA:
+- Do not diagnose.
+- Do not prescribe.
+- Do not name drugs, herbal formulations, dosages, or treatment regimens.
+- Do not recommend medication or specific treatment protocols in Allopathy, Ayurveda, Siddha, or any system.
+- Only suggest medical systems and practitioner categories to discuss with qualified, registered professionals.
+
+RESPONSE FORMAT:
+Every substantive non-crisis response must use exactly these nine numbered sections:
+1. WELCOME / ACKNOWLEDGEMENT
+2. SYMPTOM SUMMARY
+3. RELEVANT DATA REVIEWED
+4. INSIGHTS
+5. LIFESTYLE RECOMMENDATIONS
+6. SUGGESTED MEDICAL SYSTEM(S)
+7. RECOMMENDED CONSULTATION
+8. CONFIDENCE LEVEL
+9. DISCLAIMER
+
+Lifestyle recommendations may include only general healthy lifestyle activities: home comfort measures, gentle exercise, sleep hygiene, diet guidance, hydration, and stress management.`;
+}
+
+function violatesMedicalBoundary(text: string) {
+  return /(\b\d+\s?(mg|mcg|ml|tablet|capsule|drops)\b|\btake\s+\w+\s+(daily|twice|once|after|before)\b|\bprescribe\b|\bdiagnosis is\b|\byou have\b)/i.test(text);
+}
+
+async function callJarvis(prompt: string, system: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  try {
+    const response = await fetch(JARVISLABS_LLM_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: JARVISLABS_MODEL,
+        prompt,
+        system,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data.response === "string" ? data.response.trim() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -99,9 +247,31 @@ export async function POST(req: NextRequest) {
     }
 
     const latest = String((messages as ChatMessage[])[messages.length - 1]?.content ?? "");
-    return NextResponse.json({ message: buildCompanionReply(latest, context as ChatContext) });
+    const chatContext = context as ChatContext;
+    if (isDistress(latest, chatContext)) {
+      return NextResponse.json({ message: buildDistressReply(latest) });
+    }
+
+    const summary = buildContextSummary(latest, chatContext);
+    const prompt = `Latest user message:
+${latest}
+
+Conversation history:
+${(messages as ChatMessage[]).slice(-6).map(message => `${message.role}: ${message.content}`).join("\n")}
+
+Available account context, use only this:
+${JSON.stringify(summary, null, 2)}
+
+Generate the response now.`;
+
+    const modelReply = await callJarvis(prompt, buildSystemPrompt());
+    if (modelReply && !violatesMedicalBoundary(modelReply)) {
+      return NextResponse.json({ message: modelReply });
+    }
+
+    return NextResponse.json({ message: buildFallbackReply(latest, chatContext) });
   } catch (error) {
-    console.error("Chat API proxy error:", error);
-    return NextResponse.json({ message: "I'm having a slight connection issue, but I am still listening. How are you holding up?" });
+    console.error("Chat API error:", error);
+    return NextResponse.json({ message: "I am having a slight connection issue, but I am still listening. How are you holding up?" });
   }
 }
