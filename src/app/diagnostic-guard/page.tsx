@@ -1,7 +1,8 @@
 "use client";
 import AppLayout from "@/components/AppLayout";
 import { useState, useEffect, useMemo } from "react";
-import { fetchFromBackend } from "@/lib/backend";
+import { BACKEND_URL, fetchFromBackend } from "@/lib/backend";
+import { getStoredToken } from "@/lib/auth";
 import { 
   ShieldAlert, 
   AlertCircle, 
@@ -108,43 +109,28 @@ const testMismatchDb: Record<string, { name: string; date: string; coverage: num
   }
 };
 
-const labAuditorList = [
-  {
-    name: "Thyroid Panel",
-    verdict: "Normal TSH (2.1 mIU/L)",
-    completeness: 25,
-    tested: ["TSH (Pituitary screen)"],
-    missing: [
-      { name: "Free T3 (Active Hormone)", reason: "Checks actual active metabolic hormone availability. TSH can remain normal while tissue levels are depleted.", id: "ft3" },
-      { name: "Free T4 (Circulating Hormone)", reason: "Measures actual thyroid gland output. Essential to rule out secondary/central hypothyroidism.", id: "ft4" },
-      { name: "TPO Antibodies (TPOAb)", reason: "Checks for autoimmune destruction of thyroid. Can be high and cause severe symptoms for years before TSH fails.", id: "tpo" },
-      { name: "Thyroglobulin Antibodies (TgAb)", reason: "Secondary indicator for autoimmune thyroiditis (Hashimoto's).", id: "tgab" }
-    ]
-  },
-  {
-    name: "Iron & Blood Check (CBC)",
-    verdict: "Normal Hemoglobin (13.2 g/dL)",
-    completeness: 33,
-    tested: ["Hemoglobin", "Red Cell Indices", "White Blood Cells"],
-    missing: [
-      { name: "Serum Ferritin", reason: "Measures total stored iron. Depleted ferritin causes severe fatigue and body aches even with normal hemoglobin.", id: "ferritin" },
-      { name: "Total Iron Binding Capacity (TIBC)", reason: "Determines how well iron binds to transport proteins, confirming subclinical deficiency.", id: "tibc" },
-      { name: "Vitamin D3 (Active)", reason: "Critical for musculoskeletal pain thresholds and immune system management. Often completely missed.", id: "vitd" },
-      { name: "Vitamin B12 & Folate", reason: "Essential for central nervous system myelin integrity and cognitive processing speeds.", id: "b12" }
-    ]
-  },
-  {
-    name: "Brain MRI Scan",
-    verdict: "Normal Brain structure",
-    completeness: 30,
-    tested: ["Lying flat structural scan"],
-    missing: [
-      { name: "MRI with Contrast", reason: "Required to highlight active micro-inflammation or blood-brain barrier permeability gaps.", id: "contrast" },
-      { name: "NASA Lean Test (Autonomic)", reason: "A simple orthostatic stand check to evaluate POTS/Dysautonomia, since MRIs cannot check heart rate postural swings.", id: "nasalean" },
-      { name: "C-Reactive Protein (CRP / ESR)", reason: "Systemic inflammatory markers that indicate autoimmune flares which MRIs cannot scan.", id: "crp" }
-    ]
-  }
-];
+const labMarkerCatalog = [
+  { name: "Hemoglobin", reason: "Core CBC anemia screen found in most basic blood reports.", id: "hemoglobin", aliases: ["hemoglobin", "haemoglobin", "hgb", "hb"], panels: ["blood"] },
+  { name: "Red Cell Indices", reason: "MCV, MCH, and MCHC help classify hidden anemia patterns.", id: "rbc-indices", aliases: ["mcv", "mch", "mchc", "red cell", "rbc"], panels: ["blood"] },
+  { name: "White Blood Cells", reason: "Screens broad immune cell count changes.", id: "wbc", aliases: ["wbc", "white blood", "leukocyte", "leucocyte"], panels: ["blood", "inflammation"] },
+  { name: "Serum Ferritin", reason: "Measures stored iron. Ferritin depletion can cause fatigue and aches even when hemoglobin is normal.", id: "ferritin", aliases: ["ferritin", "serum ferritin"], panels: ["blood", "nutrient"] },
+  { name: "Total Iron Binding Capacity (TIBC)", reason: "Clarifies iron transport and subclinical deficiency patterns.", id: "tibc", aliases: ["tibc", "total iron binding", "transferrin"], panels: ["blood", "nutrient"] },
+  { name: "Vitamin B12", reason: "Essential for nerve function, cognition, and fatigue review.", id: "b12", aliases: ["b12", "vitamin b12", "cobalamin"], panels: ["blood", "nutrient"] },
+  { name: "Folate", reason: "Complements B12 review for anemia and neurologic symptoms.", id: "folate", aliases: ["folate", "folic acid"], panels: ["blood", "nutrient"] },
+  { name: "Vitamin D3", reason: "Often relevant for musculoskeletal pain, fatigue, and immune regulation.", id: "vitd", aliases: ["vitamin d", "vit d", "25-oh", "25 oh", "cholecalciferol"], panels: ["nutrient"] },
+  { name: "TSH", reason: "Pituitary thyroid screen. Useful, but not complete by itself.", id: "tsh", aliases: ["tsh", "thyroid stimulating"], panels: ["thyroid"] },
+  { name: "Free T3", reason: "Checks active thyroid hormone availability.", id: "ft3", aliases: ["free t3", "ft3", "triiodothyronine"], panels: ["thyroid"] },
+  { name: "Free T4", reason: "Measures circulating thyroid gland output.", id: "ft4", aliases: ["free t4", "ft4", "thyroxine"], panels: ["thyroid"] },
+  { name: "TPO Antibodies", reason: "Screens autoimmune thyroiditis, which can precede abnormal TSH.", id: "tpo", aliases: ["tpo", "tpoab", "thyroid peroxidase"], panels: ["thyroid"] },
+  { name: "Thyroglobulin Antibodies", reason: "Secondary autoimmune thyroiditis marker.", id: "tgab", aliases: ["tgab", "thyroglobulin antibody", "thyroglobulin antibodies"], panels: ["thyroid"] },
+  { name: "CRP", reason: "Systemic inflammation marker useful when symptoms persist despite normal basic screens.", id: "crp", aliases: ["crp", "c-reactive", "c reactive"], panels: ["inflammation"] },
+  { name: "ESR", reason: "Inflammation trend marker often paired with CRP.", id: "esr", aliases: ["esr", "erythrocyte sedimentation"], panels: ["inflammation"] },
+  { name: "ANA", reason: "Broad autoimmune screening marker when joint pain, fatigue, or rashes persist.", id: "ana", aliases: ["ana", "antinuclear"], panels: ["inflammation", "autoimmune"] },
+  { name: "Rheumatoid Factor", reason: "Helps screen inflammatory joint conditions.", id: "rf", aliases: ["rheumatoid factor", " rf "], panels: ["inflammation", "autoimmune"] },
+  { name: "Anti-CCP", reason: "More specific autoimmune arthritis marker than broad inflammation alone.", id: "anti-ccp", aliases: ["anti-ccp", "anti ccp", "ccp antibody"], panels: ["inflammation", "autoimmune"] },
+  { name: "HbA1c", reason: "Shows longer-term glucose pattern beyond a single glucose reading.", id: "hba1c", aliases: ["hba1c", "hba1 c", "glycated"], panels: ["metabolic"] },
+  { name: "Fasting Glucose", reason: "Basic metabolic screen for fatigue and energy fluctuations.", id: "glucose", aliases: ["glucose", "fasting sugar", "blood sugar", "fbs"], panels: ["metabolic"] },
+] as const;
 
 const subjectiveTranslators = [
   {
@@ -242,11 +228,22 @@ type DiagnosticReport = {
   cloudinaryUrl?: string;
   extractedText?: string;
   summary?: string;
+  error?: string;
 };
 
 type SymptomSlot = { key: string; label: string; color: string; bg: string };
 type TimelinePoint = { week: string; event?: string; eventId?: string; [key: string]: string | number | undefined };
 type MismatchAudit = { name: string; date: string; coverage: number; severity: string; discrepancy: string; advice: string };
+type MissingMarker = { name: string; reason: string; id: string };
+type LabAudit = {
+  name: string;
+  verdict: string;
+  completeness: number;
+  tested: string[];
+  missing: MissingMarker[];
+  reportName: string;
+  reportStatus: DiagnosticReport["status"];
+};
 
 const symptomColors = [
   { color: "#0F766E", bg: "rgba(15,118,110,0.06)" },
@@ -283,6 +280,12 @@ function uniqueCompact(values: Array<string | undefined | null>, limit = 8) {
 function sentenceFrom(value: unknown, fallback: string) {
   if (typeof value === "string" && value.trim()) return value.trim();
   return fallback;
+}
+
+function summarizeExtractedText(text?: string) {
+  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (!clean) return "PDF uploaded. Text extraction did not return readable content yet.";
+  return clean.length > 260 ? `${clean.slice(0, 260)}...` : clean;
 }
 
 function buildSymptomSlots(survey: SurveyContext, story: StoryAnalysisContext): SymptomSlot[] {
@@ -406,12 +409,74 @@ function buildMismatchAudits(
   return audits;
 }
 
+function normalizeSearchText(value: string) {
+  return ` ${value.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+}
+
+function hasAnyAlias(searchText: string, aliases: readonly string[]) {
+  return aliases.some(alias => normalizeSearchText(alias).trim() && searchText.includes(normalizeSearchText(alias)));
+}
+
+function inferReportPanels(report: DiagnosticReport, searchText: string) {
+  const panels = new Set<string>();
+  const reportKind = `${report.name} ${report.reportType} ${report.summary ?? ""}`.toLowerCase();
+
+  if (/thyroid|tsh|t3|t4|tpo|tgab/.test(searchText) || /thyroid/.test(reportKind)) panels.add("thyroid");
+  if (/cbc|hemoglobin|haemoglobin|hgb|rbc|wbc|platelet|blood count/.test(searchText) || /lab|blood|cbc/.test(reportKind)) {
+    panels.add("blood");
+    panels.add("nutrient");
+  }
+  if (/crp|esr|ana|rheumatoid|anti ccp|inflammation|autoimmune/.test(searchText) || /inflammation|autoimmune|rheumatology/.test(reportKind)) {
+    panels.add("inflammation");
+    panels.add("autoimmune");
+  }
+  if (/hba1c|glucose|sugar|diabetes|fasting/.test(searchText) || /metabolic|diabetes/.test(reportKind)) panels.add("metabolic");
+  if (panels.size === 0 && (report.extractedText || report.summary)) {
+    panels.add("blood");
+    panels.add("nutrient");
+    panels.add("thyroid");
+    panels.add("inflammation");
+    panels.add("metabolic");
+  }
+
+  return panels;
+}
+
+function buildLabAudits(reports: DiagnosticReport[]): LabAudit[] {
+  return reports
+    .filter(report => report.status !== "error")
+    .map(report => {
+      const text = `${report.name} ${report.reportType} ${report.summary ?? ""} ${report.extractedText ?? ""}`;
+      const searchText = normalizeSearchText(text);
+      const panels = inferReportPanels(report, searchText);
+      const relevantMarkers = labMarkerCatalog.filter(marker => marker.panels.some(panel => panels.has(panel)));
+      const testedMarkers = relevantMarkers.filter(marker => hasAnyAlias(searchText, marker.aliases));
+      const missingMarkers = relevantMarkers.filter(marker => !hasAnyAlias(searchText, marker.aliases));
+      const denominator = Math.max(1, relevantMarkers.length);
+      const completeness = Math.round((testedMarkers.length / denominator) * 100);
+
+      return {
+        name: report.reportType || "Uploaded Report",
+        verdict: report.extractedText
+          ? `${testedMarkers.length} detected, ${missingMarkers.length} omitted`
+          : "Waiting for extracted report text",
+        completeness,
+        tested: testedMarkers.map(marker => marker.name),
+        missing: missingMarkers.map(marker => ({ name: marker.name, reason: marker.reason, id: marker.id })),
+        reportName: report.name,
+        reportStatus: report.status,
+      };
+    });
+}
+
 export default function RedesignedDiagnosticGuard() {
   const [surveyData, setSurveyData] = useState<SurveyContext>(() => readStoredJson<SurveyContext>("echocare-survey", {}));
   const [storyAnalysis, setStoryAnalysis] = useState<StoryAnalysisContext>(() => readStoredJson<StoryAnalysisContext>("echocare-story-analysis", {}));
   const [trackerLogs, setTrackerLogs] = useState<TrackerLog[]>([]);
   const [uploadedReports, setUploadedReports] = useState<DiagnosticReport[]>(() => readStoredJson<DiagnosticReport[]>("echocare-diagnostic-reports", []));
   const [reportDraft, setReportDraft] = useState({ doctor: "", specialty: "", reportType: "Lab report", reportDate: "" });
+  const [uploadingReport, setUploadingReport] = useState(false);
+  const [reportUploadError, setReportUploadError] = useState("");
 
   const [timeRange, setTimeRange] = useState<"3M" | "6M" | "8M">("8M");
   const [visibleSymptoms, setVisibleSymptoms] = useState<Record<string, boolean>>({
@@ -453,7 +518,8 @@ export default function RedesignedDiagnosticGuard() {
     if (!effectiveSelectedNodeKey) return null;
     return mismatchAudits[effectiveSelectedNodeKey] ?? null;
   }, [effectiveSelectedNodeKey, mismatchAudits]);
-  const activeAuditor = labAuditorList[activeAuditorIdx];
+  const labAudits = useMemo(() => buildLabAudits(uploadedReports), [uploadedReports]);
+  const activeAuditor = labAudits[Math.min(activeAuditorIdx, Math.max(0, labAudits.length - 1))] ?? null;
   const patientPainPoints = Array.isArray(storyAnalysis.painPoints) ? storyAnalysis.painPoints : [];
   const patientDetectedSymptoms = symptomSlots.map(slot => slot.label);
   const patientDuration = patientTimeline.length >= 8 ? "8 timeline points" : `${patientTimeline.length} timeline points`;
@@ -544,23 +610,73 @@ export default function RedesignedDiagnosticGuard() {
     }, 600);
   };
 
-  const handleLocalReportAttach = (files: FileList | null) => {
+  const handleLocalReportAttach = async (files: FileList | null) => {
     if (!files) return;
     const pdfs = Array.from(files).filter(file => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"));
-    const added = pdfs.map(file => ({
-      id: `${Date.now()}-${file.name}`,
-      name: file.name,
-      doctor: reportDraft.doctor,
-      specialty: reportDraft.specialty,
-      reportType: reportDraft.reportType,
-      reportDate: reportDraft.reportDate || new Date().toISOString().slice(0, 10),
-      status: "pending-cloudinary" as const,
-    }));
-    const nextReports = [...added, ...uploadedReports];
-    setUploadedReports(nextReports);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("echocare-diagnostic-reports", JSON.stringify(nextReports));
+    if (pdfs.length === 0) {
+      setReportUploadError("Please attach PDF reports only.");
+      return;
     }
+
+    setUploadingReport(true);
+    setReportUploadError("");
+    const token = getStoredToken();
+    let nextReports = [...uploadedReports];
+
+    for (const file of pdfs) {
+      const localId = `${Date.now()}-${file.name}`;
+      try {
+        const body = new FormData();
+        body.append("file", file);
+        body.append("doctor", reportDraft.doctor);
+        body.append("specialty", reportDraft.specialty);
+        body.append("report_type", reportDraft.reportType);
+        body.append("report_date", reportDraft.reportDate || new Date().toISOString().slice(0, 10));
+
+        const response = await fetch(`${BACKEND_URL}/api/story/upload-report`, {
+          method: "POST",
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          body,
+        });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          throw new Error(err.detail || "Report upload failed.");
+        }
+
+        const uploaded = await response.json();
+        nextReports = [{
+          id: localId,
+          backendId: uploaded.id,
+          name: uploaded.filename || file.name,
+          doctor: reportDraft.doctor,
+          specialty: reportDraft.specialty,
+          reportType: reportDraft.reportType,
+          reportDate: reportDraft.reportDate || new Date().toISOString().slice(0, 10),
+          status: uploaded.extracted_text ? "analyzed" : "uploaded",
+          cloudinaryUrl: uploaded.cloudinary_url || uploaded.secure_url,
+          extractedText: uploaded.extracted_text,
+          summary: summarizeExtractedText(uploaded.extracted_text),
+        }, ...nextReports];
+      } catch (error) {
+        nextReports = [{
+          id: localId,
+          name: file.name,
+          doctor: reportDraft.doctor,
+          specialty: reportDraft.specialty,
+          reportType: reportDraft.reportType,
+          reportDate: reportDraft.reportDate || new Date().toISOString().slice(0, 10),
+          status: "error",
+          summary: "Upload did not complete, so this report cannot be audited yet.",
+          error: error instanceof Error ? error.message : "Upload failed",
+        }, ...nextReports];
+        setReportUploadError(error instanceof Error ? error.message : "Upload failed");
+      }
+    }
+
+    setUploadedReports(nextReports);
+    if (typeof window !== "undefined") localStorage.setItem("echocare-diagnostic-reports", JSON.stringify(nextReports));
+    setUploadingReport(false);
   };
 
   const filteredTimeline = useMemo(() => {
@@ -700,9 +816,14 @@ export default function RedesignedDiagnosticGuard() {
 
           <label style={{ border: "1.5px dashed #CBD5E1", borderRadius: "14px", padding: "18px", display: "flex", alignItems: "center", justifyContent: "center", gap: "10px", cursor: "pointer", color: "#0F766E", fontSize: "13px", fontWeight: 750, background: "#F8FAFC" }}>
             <Upload size={16} />
-            Attach multiple PDF reports for Cloudinary-backed analysis
-            <input type="file" multiple accept=".pdf,application/pdf" style={{ display: "none" }} onChange={e => handleLocalReportAttach(e.target.files)} />
+            {uploadingReport ? "Uploading and extracting PDF text..." : "Attach multiple PDF reports for Cloudinary-backed analysis"}
+            <input type="file" multiple accept=".pdf,application/pdf" disabled={uploadingReport} style={{ display: "none" }} onChange={e => { void handleLocalReportAttach(e.target.files); e.currentTarget.value = ""; }} />
           </label>
+          {reportUploadError && (
+            <div style={{ padding: "12px 14px", borderRadius: "10px", background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", fontSize: "12.5px", fontWeight: 700 }}>
+              {reportUploadError}
+            </div>
+          )}
 
           {uploadedReports.length === 0 ? (
             <div style={{ padding: "18px", borderRadius: "12px", background: "#F8FAFC", color: "#64748B", fontSize: "13px", border: "1px solid #E2E8F0" }}>
@@ -718,9 +839,10 @@ export default function RedesignedDiagnosticGuard() {
                     <br />
                     {report.doctor || "Doctor not added"} · {report.specialty || "Specialty not added"}
                   </div>
-                  <div className={`badge badge-${report.status === "uploaded" ? "success" : "warning"}`} style={{ marginTop: "10px", fontSize: "10px" }}>
-                    {report.cloudinaryUrl ? "Cloudinary synced" : "Pending Cloudinary sync"}
+                  <div className={`badge badge-${report.status === "analyzed" || report.status === "uploaded" ? "success" : report.status === "error" ? "danger" : "warning"}`} style={{ marginTop: "10px", fontSize: "10px" }}>
+                    {report.status === "analyzed" ? "Text extracted" : report.status === "error" ? "Upload failed" : report.cloudinaryUrl ? "Cloudinary synced" : "Pending upload"}
                   </div>
+                  {report.error && <div style={{ fontSize: "11px", color: "#DC2626", marginTop: "8px", lineHeight: 1.4 }}>{report.error}</div>}
                 </div>
               ))}
             </div>
@@ -872,76 +994,98 @@ export default function RedesignedDiagnosticGuard() {
               </p>
             </div>
 
-            {/* Selector tabs */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
-              {labAuditorList.map((aud, i) => (
-                <div 
-                  key={i}
-                  onClick={() => setActiveAuditorIdx(i)}
-                  style={{
-                    padding: "16px", borderRadius: "16px", border: activeAuditorIdx === i ? "2px solid #0F766E" : "1.5px solid #E2E8F0",
-                    background: activeAuditorIdx === i ? "rgba(15,118,110,0.01)" : "white",
-                    cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px"
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: "13.5px", fontWeight: 750, color: "#0F172A" }}>{aud.name}</div>
-                    <div style={{ fontSize: "11.5px", color: "#64748B", marginTop: "2px" }}>{aud.verdict}</div>
-                  </div>
-                  {/* Progress ring */}
-                  <div style={{ position: "relative", width: "40px", height: "40px" }} className="flex-shrink-0">
-                    <svg viewBox="0 0 36 36" width="40" height="40">
-                      <circle cx="18" cy="18" r="14" fill="none" stroke="#F1F5F9" strokeWidth="3" />
-                      <circle cx="18" cy="18" r="14" fill="none" stroke={aud.completeness < 30 ? "#EF4444" : "#F59E0B"} strokeWidth="3"
-                        strokeDasharray={`${2 * Math.PI * 14}`}
-                        strokeDashoffset={`${2 * Math.PI * 14 * (1 - aud.completeness / 100)}`}
-                        strokeLinecap="round" transform="rotate(-90 18 18)" />
-                    </svg>
-                    <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 800, color: "#0F172A" }}>
-                      {aud.completeness}%
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Missing markers checklist */}
-            <div style={{ padding: "20px", borderRadius: "16px", background: "#F8FAFC", border: "1.5px solid #E2E8F0" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #E2E8F0", paddingBottom: "12px", marginBottom: "16px" }}>
-                <div>
-                  <h4 style={{ fontSize: "13.5px", fontWeight: 750, color: "#0F172A" }}>Tested Indicators: <span style={{ fontWeight: 500, color: "#475569" }}>{activeAuditor.tested.join(", ")}</span></h4>
-                </div>
-                <span style={{ fontSize: "11px", fontWeight: 800, color: "#EF4444", textTransform: "uppercase" }}>{100 - activeAuditor.completeness}% Untested Gap</span>
-              </div>
-
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "12px" }}>
-                {activeAuditor.missing.map(m => {
-                  const isChecked = requestedMarkers.includes(m.name);
-                  return (
+            {labAudits.length > 0 ? (
+              <>
+                {/* Selector tabs */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
+                  {labAudits.map((aud, i) => (
                     <div 
-                      key={m.id}
-                      onClick={() => handleToggleMarker(m.name)}
+                      key={`${aud.reportName}-${i}`}
+                      onClick={() => setActiveAuditorIdx(i)}
                       style={{
-                        padding: "14px", borderRadius: "12px", border: isChecked ? "2px solid #0F766E" : "1.5px solid #E2E8F0",
-                        background: "white", cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "flex-start", gap: "12px"
+                        padding: "16px", borderRadius: "16px", border: activeAuditorIdx === i ? "2px solid #0F766E" : "1.5px solid #E2E8F0",
+                        background: activeAuditorIdx === i ? "rgba(15,118,110,0.01)" : "white",
+                        cursor: "pointer", transition: "all 0.2s", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "16px"
                       }}
                     >
-                      <div style={{
-                        width: "20px", height: "20px", borderRadius: "4px", border: "1.5px solid #94A3B8",
-                        display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-                        background: isChecked ? "#0F766E" : "transparent", borderColor: isChecked ? "#0F766E" : "#94A3B8"
-                      }}>
-                        {isChecked && <CheckCircle size={12} color="white" />}
-                      </div>
                       <div>
-                        <div style={{ fontSize: "13px", fontWeight: 750, color: "#0F172A" }}>{m.name}</div>
-                        <p style={{ fontSize: "11.5px", color: "#475569", marginTop: "4px", lineHeight: 1.45 }}>{m.reason}</p>
+                        <div style={{ fontSize: "13.5px", fontWeight: 750, color: "#0F172A" }}>{aud.name}</div>
+                        <div style={{ fontSize: "11.5px", color: "#64748B", marginTop: "2px" }}>{aud.reportName}</div>
+                        <div style={{ fontSize: "11px", color: aud.reportStatus === "analyzed" ? "#0F766E" : "#EA580C", marginTop: "4px", fontWeight: 700 }}>{aud.verdict}</div>
+                      </div>
+                      <div style={{ position: "relative", width: "40px", height: "40px" }} className="flex-shrink-0">
+                        <svg viewBox="0 0 36 36" width="40" height="40">
+                          <circle cx="18" cy="18" r="14" fill="none" stroke="#F1F5F9" strokeWidth="3" />
+                          <circle cx="18" cy="18" r="14" fill="none" stroke={aud.completeness < 30 ? "#EF4444" : aud.completeness < 70 ? "#F59E0B" : "#0F766E"} strokeWidth="3"
+                            strokeDasharray={`${2 * Math.PI * 14}`}
+                            strokeDashoffset={`${2 * Math.PI * 14 * (1 - aud.completeness / 100)}`}
+                            strokeLinecap="round" transform="rotate(-90 18 18)" />
+                        </svg>
+                        <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", fontWeight: 800, color: "#0F172A" }}>
+                          {aud.completeness}%
+                        </div>
                       </div>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
+
+                {/* Missing markers checklist */}
+                {activeAuditor && (
+                  <div style={{ padding: "20px", borderRadius: "16px", background: "#F8FAFC", border: "1.5px solid #E2E8F0" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #E2E8F0", paddingBottom: "12px", marginBottom: "16px", gap: "12px" }}>
+                      <div>
+                        <h4 style={{ fontSize: "13.5px", fontWeight: 750, color: "#0F172A" }}>
+                          Tested Indicators: <span style={{ fontWeight: 500, color: "#475569" }}>{activeAuditor.tested.length ? activeAuditor.tested.join(", ") : "No recognized markers found in extracted text"}</span>
+                        </h4>
+                      </div>
+                      <span style={{ fontSize: "11px", fontWeight: 800, color: "#EF4444", textTransform: "uppercase", whiteSpace: "nowrap" }}>{100 - activeAuditor.completeness}% Untested Gap</span>
+                    </div>
+
+                    {activeAuditor.missing.length > 0 ? (
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "12px" }}>
+                        {activeAuditor.missing.map(m => {
+                          const isChecked = requestedMarkers.includes(m.name);
+                          return (
+                            <div 
+                              key={m.id}
+                              onClick={() => handleToggleMarker(m.name)}
+                              style={{
+                                padding: "14px", borderRadius: "12px", border: isChecked ? "2px solid #0F766E" : "1.5px solid #E2E8F0",
+                                background: "white", cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "flex-start", gap: "12px"
+                              }}
+                            >
+                              <div style={{
+                                width: "20px", height: "20px", borderRadius: "4px", border: "1.5px solid #94A3B8",
+                                display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                                background: isChecked ? "#0F766E" : "transparent", borderColor: isChecked ? "#0F766E" : "#94A3B8"
+                              }}>
+                                {isChecked && <CheckCircle size={12} color="white" />}
+                              </div>
+                              <div>
+                                <div style={{ fontSize: "13px", fontWeight: 750, color: "#0F172A" }}>{m.name}</div>
+                                <p style={{ fontSize: "11.5px", color: "#475569", marginTop: "4px", lineHeight: 1.45 }}>{m.reason}</p>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div style={{ padding: "18px", borderRadius: "12px", background: "white", border: "1.5px solid #E2E8F0", fontSize: "13px", color: "#0F766E", fontWeight: 700, display: "flex", alignItems: "center", gap: "8px" }}>
+                        <CheckCircle size={16} /> No omitted markers detected for this report category.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ padding: "24px", borderRadius: "16px", background: "#F8FAFC", border: "1.5px dashed #CBD5E1", textAlign: "center" }}>
+                <Upload size={28} color="#0F766E" style={{ margin: "0 auto 10px" }} />
+                <div style={{ fontSize: "14px", fontWeight: 800, color: "#0F172A" }}>No uploaded report data found</div>
+                <p style={{ fontSize: "12.5px", color: "#475569", lineHeight: 1.5, margin: "6px auto 0", maxWidth: "460px" }}>
+                  Upload a PDF report from the Reports page, or attach one in Step 1 above. The auditor will use extracted report text instead of demo panels.
+                </p>
               </div>
-            </div>
+            )}
           </div>
 
           {/* GP Requisition checklist sheet (1 col) */}
