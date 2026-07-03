@@ -87,6 +87,17 @@ const crisisKeywords = [
   "can't go on", "hopeless", "kill myself", "abuse", "beaten", "scared of my"
 ];
 
+function readStoredJson<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  const stored = window.localStorage.getItem(key);
+  if (!stored) return fallback;
+  try {
+    return JSON.parse(stored) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([
     {
@@ -145,7 +156,17 @@ export default function ChatPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: chatHistory }),
+        body: JSON.stringify({
+          messages: chatHistory,
+          context: {
+            surveyData: readStoredJson("echocare-survey", {}),
+            storyAnalysis: readStoredJson("echocare-story-analysis", {}),
+            storyText: typeof window !== "undefined" ? window.localStorage.getItem("echocare-story") || "" : "",
+            trackerLog: readStoredJson("echocare-tracker-log", {}),
+            reports: readStoredJson("echocare-diagnostic-reports", []),
+            requestedMarkers: readStoredJson("echocare-requested-markers", []),
+          },
+        }),
       });
       const data = await res.json();
       

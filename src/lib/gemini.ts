@@ -67,6 +67,163 @@ export interface DoctorRecommendation {
   avatar: string;
 }
 
+type LooseRecord = Record<string, unknown>;
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map(item => String(item).trim()).filter(Boolean)
+    : [];
+}
+
+function textIncludesAny(text: string, words: string[]) {
+  const lower = text.toLowerCase();
+  return words.some(word => lower.includes(word));
+}
+
+function compactStrings(values: unknown[], limit = 6): string[] {
+  const seen = new Set<string>();
+  return values
+    .map(value => String(value ?? "").trim())
+    .filter(Boolean)
+    .filter(value => {
+      const key = value.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
+}
+
+function buildPatientText(data: {
+  symptoms: string[];
+  surveyData?: LooseRecord;
+  storyAnalysis?: Partial<StoryAnalysis>;
+}) {
+  return [
+    data.symptoms.join(" "),
+    data.storyAnalysis?.patternSummary,
+    ...(data.storyAnalysis?.detectedSymptoms ?? []),
+    ...(data.storyAnalysis?.painPoints ?? []),
+    ...(data.storyAnalysis?.lifestylePatterns ?? []),
+    ...Object.values(data.surveyData ?? {}).flatMap(value => Array.isArray(value) ? value : [value]),
+  ].map(value => String(value ?? "")).join(" ");
+}
+
+function buildDynamicIntegrativeSuggestions(data: {
+  symptoms: string[];
+  surveyData: LooseRecord;
+  storyAnalysis?: Partial<StoryAnalysis>;
+}): IntegrativeSuggestion[] {
+  const patientText = buildPatientText(data);
+  const symptoms = compactStrings([
+    ...data.symptoms,
+    ...(data.storyAnalysis?.detectedSymptoms ?? []),
+    data.surveyData.mainConcern,
+  ], 5);
+  const surveyFactors = compactStrings([
+    data.surveyData.symptomFrequency,
+    data.surveyData.sleepQuality,
+    data.surveyData.stressLevel,
+    data.surveyData.previousConsultations,
+    data.surveyData.careGoal,
+  ], 4);
+  const lifestyleFactors = compactStrings([
+    ...(data.storyAnalysis?.lifestylePatterns ?? []),
+    data.surveyData.dailyRoutine,
+    data.surveyData.occupation,
+    data.surveyData.travelTime,
+  ], 4);
+
+  const hasMoodOrStress = textIncludesAny(patientText, ["stress", "anxiety", "low mood", "sad", "hopeless", "not good", "sleep", "burnout"]);
+  const hasPain = textIncludesAny(patientText, ["pain", "joint", "stiff", "ache", "muscle", "swelling", "body"]);
+  const hasFatigue = textIncludesAny(patientText, ["fatigue", "tired", "energy", "exhaust", "weak"]);
+  const hasDigestive = textIncludesAny(patientText, ["digest", "acidity", "stomach", "gut", "bloating", "appetite"]);
+  const hasReportsGap = textIncludesAny(patientText, ["normal", "report", "blood test", "x-ray", "scan", "doctor", "no major"]);
+
+  const score = (base: number, boosts: Array<[boolean, number]>) =>
+    Math.min(94, Math.max(35, base + boosts.reduce((sum, [condition, boost]) => sum + (condition ? boost : 0), 0)));
+
+  const sharedPrecautions = [
+    "Use this as a discussion guide, not a diagnosis or self-treatment plan.",
+    "Consult a qualified practitioner before starting medicines, herbs, supplements, or major diet changes.",
+  ];
+
+  const suggestions: IntegrativeSuggestion[] = [
+    {
+      system: "Allopathy",
+      icon: getSystemIcon("Allopathy"),
+      color: getSystemColor("Allopathy"),
+      confidence: score(68, [[hasReportsGap, 12], [hasFatigue, 6], [hasPain, 6]]),
+      evidenceLevel: "Established",
+      description: `Modern medical review is suggested as the anchor path because your data points to ${symptoms.slice(0, 3).join(", ") || "ongoing symptoms"}${hasReportsGap ? " with previous reports or consultations that may need a second look" : ""}. The goal is to discuss appropriate evaluation and referrals, not to assume a diagnosis.`,
+      typicalFocus: ["Clinical review", "Specialist referral", "Lab/report interpretation", "Medication safety"],
+      benefits: ["Best route for ruling out urgent or treatable medical causes", "Can review whether prior tests match current symptoms", "Supports referrals such as general medicine, rheumatology, endocrinology, neurology, or mental health care"],
+      limitations: ["Short visits may miss lifestyle and emotional context unless prepared", "Basic screens can be normal even when symptoms persist"],
+      precautions: [...sharedPrecautions, "Seek urgent medical care for chest pain, fainting, severe weakness, self-harm thoughts, or rapidly worsening symptoms."],
+      aiReasoning: { symptoms, surveyFactors, lifestyleFactors },
+      communityInsights: getMockCommunityInsights("Allopathy"),
+    },
+    {
+      system: "Naturopathy",
+      icon: getSystemIcon("Naturopathy"),
+      color: getSystemColor("Naturopathy"),
+      confidence: score(55, [[hasFatigue, 10], [hasMoodOrStress, 8], [hasDigestive, 5]]),
+      evidenceLevel: "Moderate",
+      description: "Naturopathy and lifestyle medicine may be useful to explore for structured sleep, nutrition, hydration, gentle movement, and stress routines alongside medical care. This is a supportive path for rebuilding daily stability when mood and energy are low.",
+      typicalFocus: ["Sleep routine", "Nutrition", "Hydration", "Gentle movement", "Stress regulation"],
+      benefits: ["Turns broad wellness goals into trackable routines", "Can support fatigue, sleep disruption, and stress load", "Usually compatible with medical review when changes are gradual"],
+      limitations: ["Not a replacement for diagnosis, urgent care, or prescribed treatment", "Progress depends on consistency and may be slow"],
+      precautions: [...sharedPrecautions, "Avoid restrictive diets or detox plans without clinician review."],
+      aiReasoning: { symptoms, surveyFactors, lifestyleFactors },
+      communityInsights: getMockCommunityInsights("Naturopathy"),
+    },
+    {
+      system: "Ayurveda",
+      icon: getSystemIcon("Ayurveda"),
+      color: getSystemColor("Ayurveda"),
+      confidence: score(50, [[hasPain, 12], [hasDigestive, 8], [hasMoodOrStress, 5], [hasFatigue, 5]]),
+      evidenceLevel: "Moderate",
+      description: "Ayurveda may be worth discussing for chronic discomfort, digestion, sleep rhythm, stress, and constitution-based lifestyle support. Treat herbal or medicine suggestions as practitioner-led only, especially if you use other medicines.",
+      typicalFocus: ["Chronic discomfort", "Digestive rhythm", "Sleep", "Stress", "Constitution-guided routines"],
+      benefits: ["Holistic review of food, sleep, stress, and body symptoms together", "May provide culturally familiar care options", "Can complement conventional care when coordinated safely"],
+      limitations: ["Evidence varies by condition and intervention", "Herbal quality and practitioner skill matter greatly"],
+      precautions: [...sharedPrecautions, "Check herb-drug interactions and heavy-metal testing for any preparation."],
+      aiReasoning: { symptoms, surveyFactors, lifestyleFactors },
+      communityInsights: getMockCommunityInsights("Ayurveda"),
+    },
+    {
+      system: "Homeopathy",
+      icon: getSystemIcon("Homeopathy"),
+      color: getSystemColor("Homeopathy"),
+      confidence: score(38, [[hasMoodOrStress, 10], [hasReportsGap, 4]]),
+      evidenceLevel: "Emerging",
+      description: "Homeopathy is sometimes explored for individualized supportive care, especially when the person wants a longer conversation about symptoms and emotional context. Evidence is limited, so it should not delay medical evaluation.",
+      typicalFocus: ["Individualized symptom history", "Emotional wellbeing", "Chronic symptom support"],
+      benefits: ["Consultations may spend time on personal symptom context", "Generally low interaction risk when remedies are non-pharmacologic dilutions"],
+      limitations: ["Scientific evidence is limited and debated", "Should not replace proven treatment or urgent evaluation"],
+      precautions: [...sharedPrecautions, "Do not stop prescribed medicines or postpone referrals."],
+      aiReasoning: { symptoms, surveyFactors, lifestyleFactors },
+      communityInsights: getMockCommunityInsights("Homeopathy"),
+    },
+    {
+      system: "Siddha",
+      icon: getSystemIcon("Siddha"),
+      color: getSystemColor("Siddha"),
+      confidence: score(36, [[hasPain, 6], [hasDigestive, 5]]),
+      evidenceLevel: "Limited",
+      description: "Siddha may be considered for traditional supportive care where qualified practitioners are accessible, especially for chronic body discomfort or digestive patterns. It needs careful safety checks because some preparations require monitoring.",
+      typicalFocus: ["Traditional chronic care", "Musculoskeletal discomfort", "Digestive patterns"],
+      benefits: ["May be culturally relevant in Tamil-speaking regions", "Can offer structured traditional lifestyle advice"],
+      limitations: ["Limited clinical evidence for many uses", "Fewer verified practitioners outside specific regions"],
+      precautions: [...sharedPrecautions, "Only use registered BSMS practitioners and avoid untested mineral or metal preparations."],
+      aiReasoning: { symptoms, surveyFactors, lifestyleFactors },
+      communityInsights: getMockCommunityInsights("Siddha"),
+    },
+  ];
+
+  return suggestions.sort((a, b) => b.confidence - a.confidence);
+}
+
 async function callGemini(prompt: string): Promise<string> {
   if (!GEMINI_API_KEY || GEMINI_API_KEY === "your_gemini_api_key_here") {
     return getMockResponse(prompt);
@@ -166,10 +323,14 @@ Generate 3-4 insights.`;
 
 export async function generateIntegrativeSuggestions(data: {
   symptoms: string[];
-  surveyData: Record<string, string>;
+  surveyData: Record<string, unknown>;
   storyAnalysis?: Partial<StoryAnalysis>;
   preferences?: string[];
 }): Promise<IntegrativeSuggestion[]> {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === "your_gemini_api_key_here") {
+    return buildDynamicIntegrativeSuggestions(data);
+  }
+
   const prompt = `You are an AI healthcare guide with knowledge of integrative medicine systems.
 Based on the patient's profile, suggest appropriate healthcare systems to explore.
 Respond ONLY with a valid JSON array (no markdown).
@@ -211,9 +372,9 @@ Return JSON array with ALL 5 systems, ranked by relevance:
     const raw = await callGemini(prompt);
     const cleaned = raw.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(cleaned);
-    return enrichWithMockData(parsed);
+    return enrichWithMockData(parsed).sort((a, b) => b.confidence - a.confidence);
   } catch {
-    return getMockIntegrativeSuggestions();
+    return buildDynamicIntegrativeSuggestions(data);
   }
 }
 

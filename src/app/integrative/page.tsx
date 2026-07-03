@@ -50,10 +50,50 @@ function EvidenceBadge({ level }: { level: string }) {
   );
 }
 
-const defaultSessions = [
-  { consultant: "Dr. Priya Sharma", system: "Allopathy", date: "Jul 10, 2026 · 10:00 AM", duration: "30 mins", type: "Video", status: "Scheduled" },
-  { consultant: "Dr. Vaidya Ramesh Nair", system: "Ayurveda", date: "Jun 15, 2025 · 04:30 PM", duration: "45 mins", type: "In-Person", status: "Completed" },
-];
+type PersonalizedDoctor = DoctorRecommendation & { matchReason: string };
+
+function readJson<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") return fallback;
+  const stored = window.localStorage.getItem(key);
+  if (!stored) return fallback;
+  try {
+    return JSON.parse(stored) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function personalizeDoctors(system: IntegrativeSuggestion, storyAnalysis?: { suggestedDepartments?: { dept: string }[] }): PersonalizedDoctor[] {
+  const departments = Array.isArray(storyAnalysis?.suggestedDepartments)
+    ? storyAnalysis.suggestedDepartments.map(item => String(item.dept ?? "").toLowerCase())
+    : [];
+  const symptoms = system.aiReasoning.symptoms.join(" ").toLowerCase();
+  const doctors = getMockDoctors(system.system).map(doc => ({ ...doc, matchReason: "" }));
+
+  return doctors
+    .map(doc => {
+      let score = doc.rating * 10 + Math.min(20, doc.experience);
+      const spec = doc.specialization.toLowerCase();
+      if (departments.some(dept => spec.includes(dept) || dept.includes(spec.split(" ")[0]))) score += 18;
+      if (/joint|pain|stiff|rheumat/.test(symptoms) && /rheumat|joint|pain|chronic|varmam|herbal/.test(spec)) score += 14;
+      if (/fatigue|energy|thyroid|metabolic/.test(symptoms) && /internal|endocrin|metabolism|nutrition|lifestyle/.test(spec)) score += 14;
+      if (/stress|anxiety|mood|sleep|brain/.test(symptoms) && /mental|constitutional|lifestyle|rejuvenation|nutrition/.test(spec)) score += 10;
+      return {
+        ...doc,
+        matchScore: score,
+        matchReason: `Suggested for ${system.aiReasoning.symptoms.slice(0, 2).join(", ") || system.system.toLowerCase()} support through ${doc.specialization}.`,
+      };
+    })
+    .sort((a, b) => b.matchScore - a.matchScore)
+    .slice(0, 3)
+    .map(({ matchScore: _matchScore, ...doc }) => doc);
+}
+
+function outcomeFromSuggestion(system: IntegrativeSuggestion) {
+  const focus = system.typicalFocus[0] || "matched care";
+  const confidence = Math.max(42, Math.min(88, system.confidence - 8));
+  return `${confidence}% profile alignment for ${focus.toLowerCase()} discussion`;
+}
 
 export default function CombinedIntegrativeCarePage() {
   const [suggestions, setSuggestions] = useState<IntegrativeSuggestion[]>([]);
@@ -82,9 +122,7 @@ export default function CombinedIntegrativeCarePage() {
 
       const storedSessions = localStorage.getItem("echocare-consultations");
       if (storedSessions) {
-        try { setSessions(JSON.parse(storedSessions)); } catch { setSessions(defaultSessions); }
-      } else {
-        setSessions(defaultSessions);
+        try { setSessions(JSON.parse(storedSessions)); } catch { setSessions([]); }
       }
     }
   }, []);
@@ -92,17 +130,33 @@ export default function CombinedIntegrativeCarePage() {
   useEffect(() => {
     async function load() {
       setLoading(true);
-      const surveyRaw = localStorage.getItem("echocare-survey");
-      const storyRaw = localStorage.getItem("echocare-story-analysis");
-      const surveyData = surveyRaw ? JSON.parse(surveyRaw) : {};
-      const storyAnalysis = storyRaw ? JSON.parse(storyRaw) : undefined;
-      const symptoms = Array.isArray(surveyData.symptoms) ? surveyData.symptoms : ["Fatigue", "Joint pain", "Brain fog"];
+      const surveyData = readJson<Record<string, unknown>>("echocare-survey", {});
+      const storyAnalysis = readJson<Record<string, unknown> | undefined>("echocare-story-analysis", undefined);
+      const trackerLog = readJson<Record<string, unknown>>("echocare-tracker-log", {});
+      const reports = readJson<Array<{ name?: string; reportType?: string; summary?: string; extractedText?: string }>>("echocare-diagnostic-reports", []);
+      const symptoms = [
+        ...(Array.isArray(surveyData.symptoms) ? surveyData.symptoms.map(String) : []),
+        ...(Array.isArray(storyAnalysis?.detectedSymptoms) ? storyAnalysis.detectedSymptoms.map(String) : []),
+        typeof surveyData.mainConcern === "string" ? surveyData.mainConcern : "",
+      ].filter(Boolean);
 
       try {
         const res = await fetch("/api/integrative", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ symptoms, surveyData, storyAnalysis }),
+          body: JSON.stringify({
+            symptoms,
+            surveyData: {
+              ...surveyData,
+              trackerSummary: trackerLog,
+              reportSummaries: reports.slice(0, 3).map(report => ({
+                name: report.name,
+                type: report.reportType,
+                summary: report.summary || report.extractedText?.slice(0, 300),
+              })),
+            },
+            storyAnalysis,
+          }),
         });
         const data = await res.json();
         if (data.suggestions?.length > 0) {
@@ -132,7 +186,8 @@ export default function CombinedIntegrativeCarePage() {
 
   const systemDoctors = useMemo(() => {
     if (!activeSystem) return [];
-    return getMockDoctors(activeSystem.system);
+    const storyAnalysis = readJson<{ suggestedDepartments?: { dept: string }[] } | undefined>("echocare-story-analysis", undefined);
+    return personalizeDoctors(activeSystem, storyAnalysis);
   }, [activeSystem]);
 
   const isCarePlus = activePlan === "Care+";
@@ -148,7 +203,7 @@ export default function CombinedIntegrativeCarePage() {
         date: `${new Date(bookingDate).toLocaleDateString("en-US", { month: "short", day: "2-digit", year: "numeric" })} · ${bookingTime}`,
         duration: "30 mins",
         type: bookingType,
-        status: "Scheduled"
+        status: "Scheduled",
       };
 
       const updatedSessions = [newSession, ...sessions];
@@ -351,11 +406,7 @@ export default function CombinedIntegrativeCarePage() {
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {systemDoctors.map((doc, idx) => {
-                      const outcomeStr = doc.system === "Ayurveda" 
-                        ? "82% reported joint flexibility improvement"
-                        : doc.system === "Allopathy"
-                        ? "76% reported systemic inflammation resolution"
-                        : "72% reported chronic symptom reduction";
+                      const outcomeStr = outcomeFromSuggestion(activeSystem);
 
                       return (
                         <div key={idx} className="card" style={{ padding: "20px", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
@@ -394,14 +445,21 @@ export default function CombinedIntegrativeCarePage() {
                               <span style={{ fontSize: "10px", padding: "2px 8px", background: "var(--background)", borderRadius: "4px", border: "1px solid var(--border-light)" }}>🗣 {doc.languages.slice(0,2).join(", ")}</span>
                             </div>
 
-                            {/* Community Outcomes Badge */}
+                            <div style={{
+                              padding: "8px 12px", borderRadius: "8px", background: activeSystemColor.bg,
+                              border: `1px solid ${activeSystemColor.border}`, fontSize: "11.5px", color: "var(--text-secondary)",
+                              marginBottom: "10px", lineHeight: 1.45
+                            }}>
+                              <strong style={{ color: activeSystemColor.color }}>Why this practitioner:</strong> {doc.matchReason}
+                            </div>
+
                             <div style={{
                               padding: "8px 12px", borderRadius: "8px", background: "rgba(15,118,110,0.04)",
                               border: "1px solid rgba(15,118,110,0.12)", fontSize: "11.5px", color: "#0F766E",
                               display: "flex", gap: "6px", alignItems: "center", marginBottom: "14px"
                             }}>
                               <Users size={12} color="#0F766E" />
-                              <span>Outcomes: <strong>{outcomeStr}</strong></span>
+                              <span>User-data match: <strong>{outcomeStr}</strong></span>
                             </div>
                           </div>
 
